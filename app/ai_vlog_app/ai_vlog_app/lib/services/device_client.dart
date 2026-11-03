@@ -105,10 +105,14 @@ class DeviceClient {
   }
 
   /// 下载指定 Vlog 到应用目录，并写入本地库。返回本地文件路径。
+  ///
+  /// [cancelToken] 用于取消下载：调用方持有 token，UI 取消按钮触发
+  /// `cancelToken.cancel()`，dio 抛 DioException(type: cancel)，上层据此静默。
   Future<String> download(
     String baseUrl,
     RemoteVlog vlog, {
     DownloadProgress? onProgress,
+    CancelToken? cancelToken,
   }) async {
     // 下载目录由设置决定（自定义/外部/内部，失败自动回退到内部私有目录）
     final outDir = await settingsStore.resolveDownloadDir();
@@ -129,6 +133,7 @@ class DeviceClient {
         receiveTimeout: const Duration(minutes: 5),
         headers: {'Authorization': 'Bearer $_apiToken'},
       ),
+      cancelToken: cancelToken,
       onReceiveProgress: (received, total) {
         if (onProgress != null) {
           onProgress(total > 0 ? received / total : null);
