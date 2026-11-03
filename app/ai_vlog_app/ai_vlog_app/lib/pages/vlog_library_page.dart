@@ -1,15 +1,23 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 import '../services/vlog_store.dart';
 import 'player_page.dart';
 
 /// Vlog 库：列出已接收/导入的成片，可播放、保存到相册、删除。
 /// 顶部提供"导入视频"入口（手动选本地 mp4 入库，作为接收过渡；正式接收走"设备"页）。
+///
+/// 订阅 [vlogStore.changes]（① 跨页同步）：设备页下载完成、本页导入/删除后，
+/// VlogStore 都会广播最新列表，本页自动刷新——无需用户手动点刷新。
+///
+/// ④ 缩略图：tile leading 用 video_thumbnail 提取视频首帧并缓存，
+/// 生成失败回退到占位图标，不影响列表展示。盲改项——需真机验证生成效果。
 class VlogLibraryPage extends StatefulWidget {
   const VlogLibraryPage({super.key});
 
@@ -21,11 +29,29 @@ class _VlogLibraryPageState extends State<VlogLibraryPage> {
   List<VlogRecord> _records = [];
   bool _loading = true;
   bool _importing = false;
+  StreamSubscription<List<VlogRecord>>? _sub;
+  // ④ 缩略图缓存：videoPath -> 缩略图本地路径。生成后复用，避免重复解码。
+  final Map<String, String> _thumbCache = {};
+  // 正在生成缩略图的 path，避免重复触发。
+  final Set<String> _thumbPending = {};
 
   @override
   void initState() {
     super.initState();
     _load();
+    _sub = vlogStore.changes.listen((list) {
+      if (!mounted) return;
+      setState(() {
+        _records = list;
+        _loading = false;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -67,7 +93,7 @@ class _VlogLibraryPageState extends State<VlogLibraryPage> {
         day: '',
         createdAt: DateTime.now().millisecondsSinceEpoch,
       ));
-      await _load();
+      // 变更广播会自动触发 _sub 刷新，无需再手动 _load()。
       _snack('已导入：$title', ok: true);
     } catch (e) {
       _snack('导入失败：$e', ok: false);
@@ -82,7 +108,7 @@ class _VlogLibraryPageState extends State<VlogLibraryPage> {
       final f = File(r.videoPath);
       if (await f.exists()) await f.delete();
     } catch (_) {}
-    _load();
+    // 变更广播自动刷新。
   }
 
   void _snack(String msg, {required bool ok}) {
@@ -98,6 +124,41 @@ class _VlogLibraryPageState extends State<VlogLibraryPage> {
     final d = DateTime.fromMillisecondsSinceEpoch(ms);
     String two(int n) => n.toString().padLeft(2, '0');
     return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+  }
+
+  /// ④ 异步生成缩略图并缓存。生成成功后 setState 刷新 tile。
+  Future<void> _ensureThumb(String videoPath) async {
+    if (_thumbCache.containsKey(videoPath) || _thumbPending.contains(videoPath)) return;
+    if (!await File(videoPath).exists()) return;
+    _thumbPending.add(videoPath);
+    try {
+      final thumbPath = await VideoThumbnail.thumbnailFile(
+        video: videoPath,
+        imageFormat: ImageFormat.JPEG,
+        maxWidth: 128,
+        quality: 75,
+      );
+      if (thumbPath != null && thumbPath.isNotEmpty && mounted) {
+        setState(() => _thumbCache[videoPath] = thumbPath);
+      }
+    } catch (_) {
+      // 生成失败保持占位图标，不影响列表。
+    } finally {
+      _thumbPending.remove(videoPath);
+    }
+  }
+
+  /// ④ tile 的 leading：有缓存显示首帧，否则占位图标并后台触发生成。
+  Widget _thumbWidget(VlogRecord r) {
+    final cached = _thumbCache[r.videoPath];
+    if (cached != null && File(cached).existsSync()) {
+      return Image.file(File(cached), width: 48, height: 48, fit: BoxFit.cover);
+    }
+    if (File(r.videoPath).existsSync()) {
+      // 下一帧触发生成（不阻塞 build）；_ensureThumb 有 pending 守卫不会重复。
+      WidgetsBinding.instance.addPostFrameCallback((_) => _ensureThumb(r.videoPath));
+    }
+    return const Icon(Icons.movie_outlined);
   }
 
   @override
@@ -135,14 +196,14 @@ class _VlogLibraryPageState extends State<VlogLibraryPage> {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: ListTile(
-        leading: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            width: 48,
+            height: 48,
             color: Theme.of(context).colorScheme.primaryContainer,
-            borderRadius: BorderRadius.circular(8),
+            child: _thumbWidget(r),
           ),
-          child: const Icon(Icons.movie_outlined),
         ),
         title: Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text(

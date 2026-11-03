@@ -27,6 +27,9 @@ dependencies:
   # 视频播放
   video_player: ^2.9.1
 
+  # 视频缩略图（库页首帧预览）
+  video_thumbnail: ^0.5.3
+
   # 保存到系统相册
   gal: ^2.3.0
 
