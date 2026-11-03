@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -32,8 +33,18 @@ class VlogRecord {
 }
 
 /// Vlog 成片记录存储（本地 SharedPreferences，存一个 JSON 数组）。
+///
+/// add/remove 完成后会向 [changes] 流发出最新列表，订阅者（如 VlogLibraryPage）
+/// 据此自动刷新，不再需要用户手动点刷新或页面间互相调用 _load()。
 class VlogStore {
   static const _kKey = 'vlog_records';
+
+  final _controller = StreamController<List<VlogRecord>>.broadcast();
+
+  /// 记录变更流：add/remove 完成后发出最新列表（按 createdAt 倒序）。
+  Stream<List<VlogRecord>> get changes => _controller.stream;
+
+  void dispose() => _controller.close();
 
   Future<List<VlogRecord>> loadAll() async {
     final prefs = await SharedPreferences.getInstance();
@@ -56,12 +67,14 @@ class VlogStore {
     final all = await loadAll();
     all.insert(0, record);
     await _save(all);
+    _controller.add(await loadAll());
   }
 
   Future<void> remove(String videoPath) async {
     final all = await loadAll();
     all.removeWhere((r) => r.videoPath == videoPath);
     await _save(all);
+    _controller.add(await loadAll());
   }
 
   Future<void> _save(List<VlogRecord> records) async {
